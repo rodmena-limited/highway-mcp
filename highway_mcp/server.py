@@ -348,17 +348,31 @@ def watch_gmail(match: str, instruction: str, ctx: Context, interval_minutes: in
         "watching": match,
         "instruction": instruction,
         "interval_minutes": interval_minutes,
-        "watch_id": d.get("workflow_run_id"),
+        "watch_id": "agent_sched_" + (def_id or "")[:8],
         "definition_id": def_id,
+        "cron_run_id": d.get("workflow_run_id"),
         "note": "Active. Stop with stop_gmail_watch(watch_id).",
     }
 
 
 @mcp.tool()
 def stop_gmail_watch(watch_id: str, ctx: Context) -> dict[str, Any]:
-    """Stop a Gmail trigger created by watch_gmail. `watch_id` is the value returned by watch_gmail."""
+    """Stop a Gmail trigger (or any scheduled job) by its watch_id / job name.
+
+    `watch_id` is the value returned by watch_gmail (e.g. 'agent_sched_1bafb244').
+    Deactivates the durable-cron schedule so it stops firing.
+    """
     with _client(_api_key(ctx)) as c:
-        r = c.post(f"/workflows/{watch_id}/cancel", json={})
+        r = c.post(f"/workflows/schedules/{watch_id}/cancel", json={})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def list_gmail_watches(ctx: Context) -> dict[str, Any]:
+    """List the caller's active triggers / scheduled jobs (watch_gmail + schedule_goal)."""
+    with _client(_api_key(ctx)) as c:
+        r = c.get("/workflows/schedules")
     r.raise_for_status()
     return _unwrap(r.json())
 
