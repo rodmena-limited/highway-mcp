@@ -58,26 +58,12 @@ def get_workflow():
                 "goal": "{{goal}}",
                 "provider": "ollama",
                 "model": "gemma4:31b-cloud",
-                "function_model": "functiongemma:270m",
+                "function_model": "gemma4:31b-cloud",
+                "function_base_url": "https://ollama.com",
                 "max_turns": 12,
-                "tools": [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "shell_run",
-                            "description": "Run a shell command and return its stdout.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "args": {"type": "array", "items": {"type": "string"}}
-                                },
-                                "required": ["args"],
-                            },
-                        },
-                    }
-                ],
-                "tool_map": {"shell_run": "tools.shell.run"},
-                "approval_required_tools": ["tools.shell.run"],
+                "system_prompt": "You are an autonomous agent. Use the available tools (shell, HTTP, email) to accomplish the user's request. When done, give the final answer.",
+                "tool_catalog": ["shell", "http", "email"],
+                "approval_required_tools": ["tools.shell.run", "tools.http.request", "tools.email.send"],
             },
             result_key="agent_step",
         )
@@ -192,6 +178,101 @@ def approve(approval_key: str, approved: bool = True, comment: str | None = None
         r = c.post(f"/approvals/{approval_key}/{action}", json={"comment": comment or ""})
     r.raise_for_status()
     return _unwrap(r.json())
+
+
+# No-HITL agent definition for SCHEDULED (unattended) runs. The goal arrives via
+# inputs; the schedule itself is the authorization, so there is no per-run approval.
+SCHEDULED_AGENT_DSL = '''from highway_dsl import WorkflowBuilder
+
+
+def get_workflow():
+    builder = WorkflowBuilder(name="agent_scheduled", version="1.0.0")
+    builder.task("init", "tools.agent.init_goal", kwargs={"goal": "{{goal}}"})
+
+    def loop_body(b):
+        return b.task("agent_turn", "tools.agent.run_goal", kwargs={
+            "goal": "{{goal}}",
+            "provider": "ollama",
+            "model": "gemma4:31b-cloud",
+            "function_model": "gemma4:31b-cloud",
+            "function_base_url": "https://ollama.com",
+            "system_prompt": "You are an autonomous scheduled agent running unattended. Use the available tools (shell, HTTP, email) to accomplish the request, then give the final answer.",
+            "max_turns": 10,
+            "tool_catalog": ["shell", "http", "email"],
+            "approval_required_tools": [],
+        }, result_key="agent_step")
+
+    builder.while_loop("agent_loop", condition="{{agent_done}} == 0", loop_body=loop_body, dependencies=["init"])
+    builder.task("report", "tools.shell.run", args=["echo done"], dependencies=["agent_loop"])
+    return builder.build()
+
+
+if __name__ == "__main__":
+    print(get_workflow().to_json())
+'''
+
+# durable_cron wrapper that spawns the scheduled agent definition on a cron.
+_CRON_DSL_TEMPLATE = '''from highway_dsl import WorkflowBuilder
+
+
+def get_workflow():
+    b = WorkflowBuilder(name="agent_cron", version="1.0.0")
+    b.task("schedule", "tools.cron.durable_cron", kwargs={
+        "job_name": %(job)s,
+        "target_task_name": "tools.workflow.execute",
+        "cron_expression": %(cron)s,
+        "definition_id": %(def_id)s,
+        "workflow_version": 1,
+        "target_params": {"inputs": {"goal": %(goal)s}},
+        "target_queue": "highway_default",
+    })
+    return b.build()
+
+
+if __name__ == "__main__":
+    print(get_workflow().to_json())
+'''
+
+
+def _cron_dsl(definition_id: str, cron_expression: str, goal: str) -> str:
+    import json as _json
+
+    return _CRON_DSL_TEMPLATE % {
+        "job": _json.dumps("agent_sched_" + definition_id[:8]),
+        "cron": _json.dumps(cron_expression),
+        "def_id": _json.dumps(definition_id),
+        "goal": _json.dumps(goal),
+    }
+
+
+@mcp.tool()
+def schedule_goal(goal: str, cron_expression: str) -> dict[str, Any]:
+    """Schedule an agent to run `goal` repeatedly on a cron schedule (UNATTENDED).
+
+    cron_expression is standard 5-field cron in UTC, e.g. '0 9 * * *' = daily 09:00,
+    '*/30 * * * *' = every 30 minutes. The scheduled agent runs WITHOUT per-run human
+    approval (creating the schedule is the authorization), so only schedule goals you
+    trust. Uses Highway's durable cron (survives restarts; no history bloat). Returns
+    the schedule details.
+    """
+    with _client() as c:
+        r1 = c.post("/workflows", json={"python_dsl": SCHEDULED_AGENT_DSL, "execute": False})
+        r1.raise_for_status()
+        def_id = _unwrap(r1.json()).get("definition_id")
+        r2 = c.post(
+            "/workflows",
+            json={"python_dsl": _cron_dsl(def_id, cron_expression, goal), "execute": True},
+        )
+    r2.raise_for_status()
+    d = _unwrap(r2.json())
+    return {
+        "scheduled": True,
+        "cron": cron_expression,
+        "goal": goal,
+        "job_name": "agent_sched_" + (def_id or "")[:8],
+        "definition_id": def_id,
+        "cron_run_id": d.get("workflow_run_id"),
+    }
 
 
 def main() -> None:
