@@ -62,8 +62,8 @@ def get_workflow():
                 "function_base_url": "https://ollama.com",
                 "max_turns": 12,
                 "system_prompt": "You are an autonomous agent. Use the available tools (shell, HTTP, email) to accomplish the user's request. When done, give the final answer.",
-                "tool_catalog": ["shell", "http", "email"],
-                "approval_required_tools": ["tools.shell.run", "tools.http.request", "tools.email.send"],
+                "tool_catalog": ["shell", "http", "email", "gmail"],
+                "approval_required_tools": ["tools.shell.run", "tools.http.request", "tools.email.send", "apps.platform.gmail.send_email"],
             },
             result_key="agent_step",
         )
@@ -225,7 +225,7 @@ def get_workflow():
             "function_base_url": "https://ollama.com",
             "system_prompt": "You are an autonomous scheduled agent running unattended. Use the available tools (shell, HTTP, email) to accomplish the request, then give the final answer.",
             "max_turns": 10,
-            "tool_catalog": ["shell", "http", "email"],
+            "tool_catalog": ["shell", "http", "email", "gmail"],
             "approval_required_tools": [],
         }, result_key="agent_step")
 
@@ -326,7 +326,7 @@ def get_workflow():
             "function_base_url": "https://ollama.com",
             "system_prompt": "You are an autonomous deferred agent running unattended at the scheduled time. Use the available tools (shell, HTTP, email) to accomplish the request, then give the final answer.",
             "max_turns": 10,
-            "tool_catalog": ["shell", "http", "email"],
+            "tool_catalog": ["shell", "http", "email", "gmail"],
             "approval_required_tools": %(approvals)s,
         }, result_key="agent_step")
 
@@ -339,7 +339,7 @@ if __name__ == "__main__":
     print(get_workflow().to_json())
 '''
 
-_HITL_TOOLS = ["tools.shell.run", "tools.http.request", "tools.email.send"]
+_HITL_TOOLS = ["tools.shell.run", "tools.http.request", "tools.email.send", "apps.platform.gmail.send_email"]
 
 
 def _deferred_dsl(delay_seconds: int, require_approval: bool) -> str:
@@ -396,6 +396,30 @@ def run_goal_deferred(
         "require_approval": require_approval,
         "goal": goal,
     }
+
+
+@mcp.tool()
+def connect_gmail(ctx: Context) -> dict[str, Any]:
+    """Get a one-time URL to connect the caller's Gmail account to Highway.
+
+    Returns {authorize_url}: tell the user to open it in a browser and approve.
+    After that, their agents can send/search/read their Gmail (the gmail_send /
+    gmail_search / gmail_get tools). One-time per Gmail account; tokens are stored
+    server-side per tenant, so scheduled/deferred jobs keep working unattended.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.post("/oauth/gmail/authorize", json={})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def disconnect_gmail(ctx: Context) -> dict[str, Any]:
+    """Disconnect Gmail for the caller (revoke + delete the stored tokens)."""
+    with _client(_api_key(ctx)) as c:
+        r = c.request("DELETE", "/oauth/gmail/disconnect")
+    r.raise_for_status()
+    return _unwrap(r.json())
 
 
 def main() -> None:
