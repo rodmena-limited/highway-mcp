@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Highway Agents — MCP Endpoint</title>
+<style>
+  :root { --bg:#0b0f17; --panel:#121826; --line:#1f2a3d; --txt:#e6edf6; --muted:#9fb0c7; --acc:#5eead4; --acc2:#7dd3fc; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:16px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:860px; margin:0 auto; padding:48px 22px 80px; }
+  header { border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:34px; }
+  .badge { display:inline-block; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--acc); border:1px solid var(--line); border-radius:999px; padding:4px 12px; }
+  h1 { font-size:30px; margin:16px 0 6px; }
+  h2 { font-size:18px; margin:34px 0 12px; color:var(--acc2); }
+  p { color:var(--muted); }
+  a { color:var(--acc2); }
+  code { background:#0a1424; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.92em; color:#cfe8ff; }
+  pre { background:#0a1424; border:1px solid var(--line); border-radius:10px; padding:16px 18px; overflow:auto; }
+  pre code { background:none; border:0; padding:0; color:#cfe8ff; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .endpoint { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .endpoint code { font-size:15px; }
+  table { width:100%; border-collapse:collapse; margin-top:6px; }
+  td { padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  td.k { white-space:nowrap; color:var(--acc); font-family:ui-monospace,monospace; }
+  .muted { color:var(--muted); }
+  ol { color:var(--muted); }
+  footer { margin-top:48px; border-top:1px solid var(--line); padding-top:18px; color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="badge">Highway Agents</span>
+    <h1>MCP Endpoint</h1>
+    <p>A hosted Model Context Protocol server for authoring, running, and approving
+       <strong>durable, always-on AI automations</strong> on Highway — from any MCP host
+       (Claude, opencode, Cursor, mobile). No infrastructure to run on your side.</p>
+  </header>
+
+  <div class="panel endpoint">
+    <strong>Endpoint:</strong>
+    <code>https://mcp.highway.rodmena.app/mcp</code>
+    <span class="muted">· Transport: streamable-http · Auth: Bearer API key</span>
+  </div>
+
+  <h2>Connect your MCP client</h2>
+  <p>Add the server URL and your Highway API key as an <code>Authorization: Bearer</code> header.
+     A generic MCP client config:</p>
+  <pre><code>{
+  "mcpServers": {
+    "highway": {
+      "type": "http",
+      "url": "https://mcp.highway.rodmena.app/mcp",
+      "headers": { "Authorization": "Bearer hw_k1_YOUR_KEY_HERE" }
+    }
+  }
+}</code></pre>
+  <p>Claude Code (CLI):</p>
+  <pre><code>claude mcp add --transport http highway https://mcp.highway.rodmena.app/mcp \
+  --header "Authorization: Bearer hw_k1_YOUR_KEY_HERE"</code></pre>
+
+  <h2>Where do I put my API key &amp; tenant?</h2>
+  <p>Only the <strong>API key</strong>, and only in your client (the header above). You do
+     <strong>not</strong> set a tenant id — Highway derives your tenant from the key. One key =
+     one tenant. Get a key (<code>hw_k1_…</code>) from your Highway dashboard.</p>
+
+  <h2>Tools</h2>
+  <div class="panel">
+  <table>
+    <tr><td class="k">run_goal</td><td>Start a durable agent that pursues a natural-language goal to completion. Returns a <code>workflow_run_id</code>; the agent keeps running server-side even after you disconnect.</td></tr>
+    <tr><td class="k">get_status</td><td>Get a run's status, progress, result, and any actions awaiting your approval.</td></tr>
+    <tr><td class="k">approve</td><td>Approve or reject a paused action to resume the run — works across devices.</td></tr>
+    <tr><td class="k">schedule_goal</td><td>Run a goal on a recurring cron schedule (e.g. a daily report email), unattended.</td></tr>
+  </table>
+  </div>
+
+  <h2>How it works</h2>
+  <ol>
+    <li><strong>Author</strong> in plain English via <code>run_goal</code> / <code>schedule_goal</code>.</li>
+    <li>The agent runs <strong>durably on Highway</strong> — it survives restarts and client disconnects.</li>
+    <li><strong>Outbound/risky actions pause for your approval</strong> (human-in-the-loop); approve from any device with <code>approve</code>.</li>
+    <li><strong>Monitor</strong> anytime with <code>get_status</code>.</li>
+  </ol>
+
+  <footer>
+    Highway Agents · powered by the Highway durable workflow engine.
+    Keep your <code>hw_k1_</code> key secret — it authenticates as your tenant.
+  </footer>
+</div>
+</body>
+</html>

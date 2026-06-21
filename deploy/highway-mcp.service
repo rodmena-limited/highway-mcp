@@ -1,0 +1,24 @@
+[Unit]
+Description=Highway Agents MCP Server (remote MCP front door)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=farshid
+Group=farshid
+WorkingDirectory=/home/farshid/highway-stack/highway-mcp
+Environment=TRANSPORT=http
+Environment=HOST=127.0.0.1
+Environment=PORT=8848
+Environment=HIGHWAY_BASE_URL=http://localhost:7822
+# No HIGHWAY_API_KEY: each request supplies its own hw_k1_ key (per-tenant auth).
+ExecStart=/home/farshid/highway-stack/highway-mcp/.venv/bin/python -m highway_mcp.server
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=highway-mcp
+
+[Install]
+WantedBy=multi-user.target

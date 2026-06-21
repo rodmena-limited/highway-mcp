@@ -12,10 +12,10 @@ The agent loop runs server-side on Highway, so it keeps going (listening,
 acting, waiting for approval) even after this client disconnects. The user
 re-attaches from any device to check status or approve.
 
-Auth (Phase 0): the customer's Highway API key (hw_k1_...) is read from
-HIGHWAY_API_KEY and forwarded as a Bearer token (the engine's RBAC middleware
-accepts hw_k1_ keys inline). Per-connection auth (one key per customer, taken
-from the MCP session) is the production follow-up — see README.
+Auth: each request carries the customer's Highway API key (hw_k1_...) as an
+`Authorization: Bearer` header; the server reads it per request so every caller
+acts as their own tenant (the tenant is derived from the key by Highway). For
+local stdio use, HIGHWAY_API_KEY is the fallback.
 
 Run:
   HIGHWAY_BASE_URL=http://localhost:7822 HIGHWAY_API_KEY=hw_k1_xxx \
@@ -30,7 +30,7 @@ import os
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 
 BASE_URL = os.environ.get("HIGHWAY_BASE_URL", "http://localhost:7822").rstrip("/")
@@ -90,16 +90,40 @@ if __name__ == "__main__":
 mcp = FastMCP("highway-agents")
 
 
-def _headers() -> dict[str, str]:
-    if not API_KEY:
-        raise RuntimeError("HIGHWAY_API_KEY is not set (expected an hw_k1_... key)")
-    return {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+def _api_key(ctx: Context | None) -> str:
+    """Resolve the Highway API key for THIS request.
+
+    Public/multi-tenant: each caller sends their own hw_k1_ key as an
+    `Authorization: Bearer` header, so they act as their own tenant (Highway
+    derives the tenant from the key). Falls back to the env key for local stdio.
+    """
+    auth = ""
+    try:
+        req = ctx.request_context.request if ctx is not None else None
+        if req is not None:
+            auth = req.headers.get("authorization", "") or ""
+    except (ValueError, AttributeError):
+        auth = ""
+    key = auth[7:].strip() if auth[:7].lower() == "bearer " else auth.strip()
+    key = key or API_KEY  # stdio/local fallback
+    if not key:
+        raise RuntimeError(
+            "No Highway API key. Send 'Authorization: Bearer hw_k1_...' from your "
+            "MCP client (or set HIGHWAY_API_KEY for local stdio use)."
+        )
+    if not key.startswith("hw_k1_"):
+        raise RuntimeError("Invalid Highway API key (expected an hw_k1_... key).")
+    return key
 
 
-def _client() -> httpx.Client:
+def _client(api_key: str) -> httpx.Client:
     # Sync client on purpose: the engine's own lesson #721 is that async httpx in
     # workers causes zombie threads; sync is simpler and equally capable here.
-    return httpx.Client(base_url=BASE_URL + API_PREFIX, headers=_headers(), timeout=30.0)
+    return httpx.Client(
+        base_url=BASE_URL + API_PREFIX,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        timeout=30.0,
+    )
 
 
 def _unwrap(payload: Any) -> Any:
@@ -110,14 +134,14 @@ def _unwrap(payload: Any) -> Any:
 
 
 @mcp.tool()
-def run_goal(goal: str) -> dict[str, Any]:
+def run_goal(goal: str, ctx: Context) -> dict[str, Any]:
     """Start a durable Highway agent that pursues `goal` to completion.
 
     Returns immediately with a workflow_run_id. The agent runs server-side and
     survives this client disconnecting. Use get_status to follow it and to see
     any actions awaiting your approval.
     """
-    with _client() as c:
+    with _client(_api_key(ctx)) as c:
         r = c.post(
             "/workflows",
             json={"python_dsl": AGENT_DSL, "inputs": {"goal": goal}, "execute": True},
@@ -128,13 +152,13 @@ def run_goal(goal: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def get_status(workflow_run_id: str) -> dict[str, Any]:
+def get_status(workflow_run_id: str, ctx: Context) -> dict[str, Any]:
     """Get an agent run's status, progress, result, and any pending approvals.
 
     `pending_approvals` lists actions the agent has paused on; pass an
     approval_key to the `approve` tool to let it continue.
     """
-    with _client() as c:
+    with _client(_api_key(ctx)) as c:
         wf = c.get(f"/workflows/{workflow_run_id}")
         wf.raise_for_status()
         d = _unwrap(wf.json())
@@ -167,14 +191,14 @@ def get_status(workflow_run_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def approve(approval_key: str, approved: bool = True, comment: str | None = None) -> dict[str, Any]:
+def approve(approval_key: str, ctx: Context, approved: bool = True, comment: str | None = None) -> dict[str, Any]:
     """Approve (or reject) a pending agent action to resume the durable run.
 
     Set approved=False to reject. This works across sessions and devices: you
     can approve from one client an action a run started from another.
     """
     action = "approve" if approved else "reject"
-    with _client() as c:
+    with _client(_api_key(ctx)) as c:
         r = c.post(f"/approvals/{approval_key}/{action}", json={"comment": comment or ""})
     r.raise_for_status()
     return _unwrap(r.json())
@@ -246,7 +270,7 @@ def _cron_dsl(definition_id: str, cron_expression: str, goal: str) -> str:
 
 
 @mcp.tool()
-def schedule_goal(goal: str, cron_expression: str) -> dict[str, Any]:
+def schedule_goal(goal: str, cron_expression: str, ctx: Context) -> dict[str, Any]:
     """Schedule an agent to run `goal` repeatedly on a cron schedule (UNATTENDED).
 
     cron_expression is standard 5-field cron in UTC, e.g. '0 9 * * *' = daily 09:00,
@@ -255,7 +279,7 @@ def schedule_goal(goal: str, cron_expression: str) -> dict[str, Any]:
     trust. Uses Highway's durable cron (survives restarts; no history bloat). Returns
     the schedule details.
     """
-    with _client() as c:
+    with _client(_api_key(ctx)) as c:
         r1 = c.post("/workflows", json={"python_dsl": SCHEDULED_AGENT_DSL, "execute": False})
         r1.raise_for_status()
         def_id = _unwrap(r1.json()).get("definition_id")
@@ -278,7 +302,31 @@ def schedule_goal(goal: str, cron_expression: str) -> dict[str, Any]:
 def main() -> None:
     transport = os.environ.get("TRANSPORT", "stdio")
     if transport in ("http", "streamable-http"):
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        # Bind to localhost only — nginx terminates TLS and fronts /mcp.
+        mcp.settings.host = os.environ.get("HOST", "127.0.0.1")
         mcp.settings.port = HTTP_PORT
+        # Binding to localhost makes FastMCP lock DNS-rebinding protection to
+        # localhost. nginx forwards the real Host, so allow it explicitly (nginx
+        # is the true host boundary). Keep protection on for defence in depth.
+        allowed_hosts = [
+            h.strip()
+            for h in os.environ.get(
+                "MCP_ALLOWED_HOSTS", "mcp.highway.rodmena.app,127.0.0.1:*,localhost:*"
+            ).split(",")
+            if h.strip()
+        ]
+        allowed_origins = [
+            o.strip()
+            for o in os.environ.get("MCP_ALLOWED_ORIGINS", "https://mcp.highway.rodmena.app").split(",")
+            if o.strip()
+        ]
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        )
         mcp.run(transport="streamable-http")
     else:
         mcp.run()
