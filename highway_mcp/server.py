@@ -303,6 +303,66 @@ def schedule_goal(goal: str, cron_expression: str, ctx: Context) -> dict[str, An
     }
 
 
+def _watch_goal(match: str, instruction: str) -> str:
+    """Build the poll-and-react goal for a Gmail trigger. Dedup is stateless: we
+    can't mark mail read (readonly scope), so the agent checks its own Sent mail
+    before replying — self-correcting across the durable-cron ticks."""
+    return (
+        "You are a Gmail auto-responder; each run is a single poll. "
+        f'STEP 1: call gmail_search with query "{match} newer_than:1d" and max_results 5. '
+        "STEP 2: for each message returned, call gmail_get to read its sender, subject and body. "
+        "STEP 3 (DEDUP — critical): before replying to a sender, call gmail_search with "
+        '"in:sent to:<that exact sender address> newer_than:1d"; if it returns anything you have '
+        "ALREADY replied to them today, so SKIP that message. Never reply to the same sender twice in a day. "
+        f"STEP 4: for every message you have NOT already replied to, {instruction} — send it with "
+        'gmail_send to the original sender, subject "Re: <their subject>". '
+        "STEP 5: if there are no new, unreplied messages, do nothing. "
+        "Act directly without asking for approval; keep replies short."
+    )
+
+
+@mcp.tool()
+def watch_gmail(match: str, instruction: str, ctx: Context, interval_minutes: int = 2) -> dict[str, Any]:
+    """Create a Gmail trigger: when an email matching `match` arrives, automatically do `instruction`.
+
+    Examples:
+      watch_gmail("from:jack@example.com", "reply with a short, original programmer joke")
+      watch_gmail("subject:invoice", "reply that we received it and will pay within 7 days")
+
+    `match` is a Gmail search filter (e.g. 'from:jack@example.com', 'subject:urgent'). `instruction`
+    is what to do for each new matching email (it replies to the sender via Gmail). Runs UNATTENDED
+    every `interval_minutes` on Highway's durable cron (survives restarts). Dedup is automatic — it
+    won't reply to the same sender twice in a day. Requires Gmail connected (connect_gmail). Returns a
+    watch handle; stop it with stop_gmail_watch(watch_id).
+    """
+    goal = _watch_goal(match, instruction)
+    cron = "* * * * *" if int(interval_minutes) <= 1 else f"*/{int(interval_minutes)} * * * *"
+    with _client(_api_key(ctx)) as c:
+        r1 = c.post("/workflows", json={"python_dsl": SCHEDULED_AGENT_DSL, "execute": False})
+        r1.raise_for_status()
+        def_id = _unwrap(r1.json()).get("definition_id")
+        r2 = c.post("/workflows", json={"python_dsl": _cron_dsl(def_id, cron, goal), "execute": True})
+    r2.raise_for_status()
+    d = _unwrap(r2.json())
+    return {
+        "watching": match,
+        "instruction": instruction,
+        "interval_minutes": interval_minutes,
+        "watch_id": d.get("workflow_run_id"),
+        "definition_id": def_id,
+        "note": "Active. Stop with stop_gmail_watch(watch_id).",
+    }
+
+
+@mcp.tool()
+def stop_gmail_watch(watch_id: str, ctx: Context) -> dict[str, Any]:
+    """Stop a Gmail trigger created by watch_gmail. `watch_id` is the value returned by watch_gmail."""
+    with _client(_api_key(ctx)) as c:
+        r = c.post(f"/workflows/{watch_id}/cancel", json={})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
 # One-time DEFERRED agent: durably wait, then run the goal once, UNATTENDED.
 # The wait uses Highway's durable timer (builder.wait -> WaitOperator) which
 # suspends the workflow and releases the worker until the fire time — it survives
