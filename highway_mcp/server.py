@@ -135,11 +135,14 @@ def _unwrap(payload: Any) -> Any:
 
 @mcp.tool()
 def run_goal(goal: str, ctx: Context) -> dict[str, Any]:
-    """Start a durable Highway agent that pursues `goal` to completion.
+    """Start a durable Highway agent that pursues `goal` to completion NOW.
 
-    Returns immediately with a workflow_run_id. The agent runs server-side and
-    survives this client disconnecting. Use get_status to follow it and to see
-    any actions awaiting your approval.
+    Use this for IMMEDIATE actions the user is present to oversee: outbound/risky
+    steps pause for approval (get_status surfaces them; resolve with `approve`).
+    For anything DEFERRED ("in 10 minutes", "tomorrow", "at 3pm") use
+    `run_goal_deferred`, and for RECURRING jobs use `schedule_goal` — those run
+    pre-approved/unattended so they never block on an approval when nobody is
+    around. Returns a workflow_run_id; the run survives this client disconnecting.
     """
     with _client(_api_key(ctx)) as c:
         r = c.post(
@@ -276,7 +279,8 @@ def schedule_goal(goal: str, cron_expression: str, ctx: Context) -> dict[str, An
     cron_expression is standard 5-field cron in UTC, e.g. '0 9 * * *' = daily 09:00,
     '*/30 * * * *' = every 30 minutes. The scheduled agent runs WITHOUT per-run human
     approval (creating the schedule is the authorization), so only schedule goals you
-    trust. Uses Highway's durable cron (survives restarts; no history bloat). Returns
+    trust. Uses Highway's durable cron (survives restarts; no history bloat). For a
+    ONE-TIME future run (not recurring), use `run_goal_deferred` instead. Returns
     the schedule details.
     """
     with _client(_api_key(ctx)) as c:
@@ -296,6 +300,101 @@ def schedule_goal(goal: str, cron_expression: str, ctx: Context) -> dict[str, An
         "job_name": "agent_sched_" + (def_id or "")[:8],
         "definition_id": def_id,
         "cron_run_id": d.get("workflow_run_id"),
+    }
+
+
+# One-time DEFERRED agent: durably wait, then run the goal once, UNATTENDED.
+# The wait uses Highway's durable timer (builder.wait -> WaitOperator) which
+# suspends the workflow and releases the worker until the fire time — it survives
+# restarts and does not depend on any client being online. The goal arrives via
+# inputs; `delay` and the approval policy are baked in at schedule time.
+_DEFERRED_DSL_TEMPLATE = '''from datetime import timedelta
+from highway_dsl import WorkflowBuilder
+
+
+def get_workflow():
+    b = WorkflowBuilder(name="agent_deferred", version="1.0.0")
+    b.wait("deferred_wait", wait_for=timedelta(seconds=%(delay)d))
+    b.task("init", "tools.agent.init_goal", kwargs={"goal": "{{goal}}"}, dependencies=["deferred_wait"])
+
+    def loop_body(bb):
+        return bb.task("agent_turn", "tools.agent.run_goal", kwargs={
+            "goal": "{{goal}}",
+            "provider": "ollama",
+            "model": "gemma4:31b-cloud",
+            "function_model": "gemma4:31b-cloud",
+            "function_base_url": "https://ollama.com",
+            "system_prompt": "You are an autonomous deferred agent running unattended at the scheduled time. Use the available tools (shell, HTTP, email) to accomplish the request, then give the final answer.",
+            "max_turns": 10,
+            "tool_catalog": ["shell", "http", "email"],
+            "approval_required_tools": %(approvals)s,
+        }, result_key="agent_step")
+
+    b.while_loop("agent_loop", condition="{{agent_done}} == 0", loop_body=loop_body, dependencies=["init"])
+    b.task("report", "tools.shell.run", args=["echo done"], dependencies=["agent_loop"])
+    return b.build()
+
+
+if __name__ == "__main__":
+    print(get_workflow().to_json())
+'''
+
+_HITL_TOOLS = ["tools.shell.run", "tools.http.request", "tools.email.send"]
+
+
+def _deferred_dsl(delay_seconds: int, require_approval: bool) -> str:
+    import json as _json
+
+    return _DEFERRED_DSL_TEMPLATE % {
+        "delay": int(delay_seconds),
+        "approvals": _json.dumps(_HITL_TOOLS if require_approval else []),
+    }
+
+
+@mcp.tool()
+def run_goal_deferred(
+    goal: str,
+    delay_seconds: int,
+    ctx: Context,
+    require_approval: bool = False,
+) -> dict[str, Any]:
+    """Run `goal` ONCE at a future time — durable, unattended, no machine needed.
+
+    Use this for ANY "do X later" request: "send me an email in 10 minutes",
+    "remind me tomorrow at 9am", "in 2 hours fetch the report and email it".
+    Convert the user's time into `delay_seconds` from now (10 min = 600; for an
+    absolute time like tomorrow 9am, compute the seconds until then).
+
+    The job waits durably on Highway — it survives restarts and holds no worker —
+    then runs WITHOUT any per-action approval. Scheduling it now (while the user is
+    here) IS the authorization, so it fires even if the user's device is offline.
+    This is the whole point of deferred jobs; do NOT use `run_goal` for them (its
+    approval would block at the future time when nobody is around to approve).
+
+    Set require_approval=True ONLY if the user explicitly says to ask before it
+    acts. Returns the workflow_run_id (poll with get_status).
+    """
+    if delay_seconds < 0:
+        raise ValueError("delay_seconds must be >= 0")
+    if delay_seconds > 86400 * 30:
+        raise ValueError("delay_seconds exceeds the 30-day maximum")
+    with _client(_api_key(ctx)) as c:
+        r = c.post(
+            "/workflows",
+            json={
+                "python_dsl": _deferred_dsl(delay_seconds, require_approval),
+                "inputs": {"goal": goal},
+                "execute": True,
+            },
+        )
+    r.raise_for_status()
+    data = _unwrap(r.json())
+    return {
+        "workflow_run_id": data.get("workflow_run_id"),
+        "status": "deferred",
+        "delay_seconds": delay_seconds,
+        "require_approval": require_approval,
+        "goal": goal,
     }
 
 
