@@ -322,19 +322,49 @@ def _watch_goal(match: str, instruction: str) -> str:
 
 
 @mcp.tool()
-def watch_gmail(match: str, instruction: str, ctx: Context, interval_minutes: int = 2) -> dict[str, Any]:
+def watch_gmail(match: str, instruction: str, ctx: Context, mode: str = "push", interval_minutes: int = 2) -> dict[str, Any]:
     """Create a Gmail trigger: when an email matching `match` arrives, automatically do `instruction`.
 
     Examples:
-      watch_gmail("from:jack@example.com", "reply with a short, original programmer joke")
+      watch_gmail("from:jack@example.com", "reply with a short programmer joke")
       watch_gmail("subject:invoice", "reply that we received it and will pay within 7 days")
 
-    `match` is a Gmail search filter (e.g. 'from:jack@example.com', 'subject:urgent'). `instruction`
-    is what to do for each new matching email (it replies to the sender via Gmail). Runs UNATTENDED
-    every `interval_minutes` on Highway's durable cron (survives restarts). Dedup is automatic — it
-    won't reply to the same sender twice in a day. Requires Gmail connected (connect_gmail). Returns a
-    watch handle; stop it with stop_gmail_watch(watch_id).
+    `match` is a simple Gmail filter: 'from:<addr>' or 'subject:<text>' (anything else is
+    matched as a substring of subject/body). `instruction` is what to do for each new matching
+    email (it replies to the sender via Gmail). Requires Gmail connected (connect_gmail).
+    Returns a watch handle; stop it with stop_gmail_watch(watch_id).
+
+    mode="push" (default) is REAL-TIME via Gmail push / Cloud Pub/Sub — fires within seconds,
+    no polling, exactly-once. mode="poll" uses a durable cron every `interval_minutes` (a
+    fallback for environments without Pub/Sub configured).
     """
+    if mode == "push":
+        m = match.strip()
+        low = m.lower()
+        if low.startswith("from:"):
+            rule_match: dict[str, Any] = {"from": m[5:].strip()}
+        elif low.startswith("subject:"):
+            rule_match = {"contains": m[8:].strip()}
+        else:
+            rule_match = {"contains": m}
+        with _client(_api_key(ctx)) as c:
+            w = c.post("/triggers/gmail/watch", json={})  # register/refresh the mailbox watch
+            w.raise_for_status()
+            r = c.post(
+                "/triggers/rules",
+                json={"channel": "gmail", "match": rule_match, "instruction": instruction},
+            )
+        r.raise_for_status()
+        rule = _unwrap(r.json())
+        return {
+            "mode": "push",
+            "watching": match,
+            "instruction": instruction,
+            "watch_id": rule.get("rule_id"),
+            "note": "Real-time trigger active. Stop with stop_gmail_watch(watch_id).",
+        }
+
+    # mode == "poll": durable-cron fallback
     goal = _watch_goal(match, instruction)
     cron = "* * * * *" if int(interval_minutes) <= 1 else f"*/{int(interval_minutes)} * * * *"
     with _client(_api_key(ctx)) as c:
@@ -343,38 +373,39 @@ def watch_gmail(match: str, instruction: str, ctx: Context, interval_minutes: in
         def_id = _unwrap(r1.json()).get("definition_id")
         r2 = c.post("/workflows", json={"python_dsl": _cron_dsl(def_id, cron, goal), "execute": True})
     r2.raise_for_status()
-    d = _unwrap(r2.json())
     return {
+        "mode": "poll",
         "watching": match,
         "instruction": instruction,
         "interval_minutes": interval_minutes,
         "watch_id": "agent_sched_" + (def_id or "")[:8],
-        "definition_id": def_id,
-        "cron_run_id": d.get("workflow_run_id"),
-        "note": "Active. Stop with stop_gmail_watch(watch_id).",
+        "note": "Polling trigger active. Stop with stop_gmail_watch(watch_id).",
     }
 
 
 @mcp.tool()
 def stop_gmail_watch(watch_id: str, ctx: Context) -> dict[str, Any]:
-    """Stop a Gmail trigger (or any scheduled job) by its watch_id / job name.
+    """Stop a Gmail trigger by its watch_id.
 
-    `watch_id` is the value returned by watch_gmail (e.g. 'agent_sched_1bafb244').
-    Deactivates the durable-cron schedule so it stops firing.
+    Accepts either a real-time push rule id (UUID, from a push watch_gmail) or a
+    polling schedule name ('agent_sched_...'); removes the rule / cancels the schedule.
     """
     with _client(_api_key(ctx)) as c:
-        r = c.post(f"/workflows/schedules/{watch_id}/cancel", json={})
+        if watch_id.startswith("agent_sched_"):
+            r = c.post(f"/workflows/schedules/{watch_id}/cancel", json={})
+        else:
+            r = c.request("DELETE", f"/triggers/rules/{watch_id}")
     r.raise_for_status()
     return _unwrap(r.json())
 
 
 @mcp.tool()
 def list_gmail_watches(ctx: Context) -> dict[str, Any]:
-    """List the caller's active triggers / scheduled jobs (watch_gmail + schedule_goal)."""
+    """List the caller's active Gmail triggers — real-time push rules and polling schedules."""
     with _client(_api_key(ctx)) as c:
-        r = c.get("/workflows/schedules")
-    r.raise_for_status()
-    return _unwrap(r.json())
+        rules = _unwrap(c.get("/triggers/rules", params={"channel": "gmail"}).json())
+        scheds = _unwrap(c.get("/workflows/schedules").json())
+    return {"push_rules": rules.get("rules", []), "poll_schedules": scheds.get("schedules", [])}
 
 
 # One-time DEFERRED agent: durably wait, then run the goal once, UNATTENDED.
