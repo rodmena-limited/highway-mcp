@@ -574,6 +574,28 @@ def stop_telegram_watch(watch_id: str, ctx: Context) -> dict[str, Any]:
     return _unwrap(r.json())
 
 
+@mcp.tool()
+def list_automations(ctx: Context) -> dict[str, Any]:
+    """List everything running for the caller: connected channels (Gmail/Telegram),
+    trigger rules across all channels, and scheduled jobs. The "what's set up for me" view.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.get("/automations")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def list_runs(ctx: Context, limit: int = 20) -> dict[str, Any]:
+    """List the caller's recent agent runs (most recent first) — goal runs, reactions,
+    and scheduled jobs — with status and a one-line result summary. The "what happened" view.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.get("/agent-runs", params={"limit": limit})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
 def main() -> None:
     transport = os.environ.get("TRANSPORT", "stdio")
     if transport in ("http", "streamable-http"):
