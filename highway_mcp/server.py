@@ -26,6 +26,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -43,7 +44,7 @@ HTTP_PORT = int(os.environ.get("PORT", "8848"))
 # a self-contained string so the MCP server has no dependency on highway_dsl;
 # the engine's dsl-compiler turns it into JSON on submit. Source of truth lives
 # in the engine repo at api/dsl_templates/agent_run_goal.py — keep in sync.
-AGENT_DSL = '''from highway_dsl import WorkflowBuilder
+AGENT_DSL_TEMPLATE = '''from highway_dsl import WorkflowBuilder
 
 
 def get_workflow():
@@ -62,8 +63,9 @@ def get_workflow():
                 "function_base_url": "https://ollama.com",
                 "max_turns": 12,
                 "system_prompt": "You are an autonomous agent. Use the available tools to accomplish the user's request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
-                "tool_catalog": ["shell", "http", "email", "gmail", "telegram"],
-                "approval_required_tools": ["tools.shell.run", "tools.http.request", "tools.email.send", "apps.platform.gmail.send_email"],
+                "tool_catalog": %(catalog)s,
+                "tool_config": %(tool_config)s,
+                "approval_required_tools": %(approvals)s,
             },
             result_key="agent_step",
         )
@@ -133,6 +135,33 @@ def _unwrap(payload: Any) -> Any:
     return payload
 
 
+_BASE_CATALOG = ["shell", "http", "email", "gmail", "telegram"]
+_BASE_APPROVALS = ["tools.shell.run", "tools.http.request", "tools.email.send", "apps.platform.gmail.send_email"]
+
+
+def _agent_dsl_for(c: httpx.Client) -> str:
+    """Build the run_goal DSL, injecting the tenant's connected MCP servers (if any) so
+    the agent auto-discovers and can call their tools, each HITL-gated via tools.mcp.call.
+    Tokens stay in Vault: only {name, url, auth_secret_path} are passed."""
+    servers: list[dict[str, Any]] = []
+    try:
+        r = c.get("/mcp/servers")
+        if r.status_code == 200:
+            for s in (_unwrap(r.json()) or {}).get("servers", []):
+                if s.get("enabled", True) and s.get("auth_secret_path"):
+                    servers.append({"name": s["name"], "url": s["url"], "auth_secret_path": s["auth_secret_path"]})
+    except Exception:  # noqa: BLE001 - a registry hiccup must not block run_goal
+        servers = []
+    catalog = list(_BASE_CATALOG) + (["mcp"] if servers else [])
+    approvals = list(_BASE_APPROVALS) + (["tools.mcp.call"] if servers else [])
+    tool_config = {"mcp": {"servers": servers}} if servers else {}
+    return AGENT_DSL_TEMPLATE % {
+        "catalog": json.dumps(catalog),
+        "tool_config": json.dumps(tool_config),
+        "approvals": json.dumps(approvals),
+    }
+
+
 @mcp.tool()
 def run_goal(goal: str, ctx: Context) -> dict[str, Any]:
     """Start a durable Highway agent that pursues `goal` to completion NOW.
@@ -145,13 +174,47 @@ def run_goal(goal: str, ctx: Context) -> dict[str, Any]:
     around. Returns a workflow_run_id; the run survives this client disconnecting.
     """
     with _client(_api_key(ctx)) as c:
+        dsl = _agent_dsl_for(c)
         r = c.post(
             "/workflows",
-            json={"python_dsl": AGENT_DSL, "inputs": {"goal": goal}, "execute": True},
+            json={"python_dsl": dsl, "inputs": {"goal": goal}, "execute": True},
         )
     r.raise_for_status()
     data = _unwrap(r.json())
     return {"workflow_run_id": data.get("workflow_run_id"), "status": "started"}
+
+
+@mcp.tool()
+def connect_mcp(name: str, url: str, ctx: Context, auth_token: str | None = None) -> dict[str, Any]:
+    """Connect an external MCP server so your agents can use its tools.
+
+    name: a short handle ([a-zA-Z0-9_-], 1-64). url: the server's https Streamable-HTTP
+    endpoint. auth_token: optional bearer token (stored in Vault, never in the workflow).
+    After connecting, run_goal auto-discovers and can call this server's tools, each
+    HITL-gated. Use list_mcp_servers / disconnect_mcp to manage them.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.post("/mcp/servers", json={"name": name, "url": url, "auth_token": auth_token})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def list_mcp_servers(ctx: Context) -> dict[str, Any]:
+    """List the external MCP servers connected for your tenant."""
+    with _client(_api_key(ctx)) as c:
+        r = c.get("/mcp/servers")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def disconnect_mcp(name: str, ctx: Context) -> dict[str, Any]:
+    """Disconnect an external MCP server by name (removes it and its stored token)."""
+    with _client(_api_key(ctx)) as c:
+        r = c.delete(f"/mcp/servers/{name}")
+    r.raise_for_status()
+    return _unwrap(r.json())
 
 
 @mcp.tool()
