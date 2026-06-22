@@ -322,7 +322,7 @@ def _watch_goal(match: str, instruction: str) -> str:
 
 
 @mcp.tool()
-def watch_gmail(match: str, instruction: str, ctx: Context, mode: str = "push", interval_minutes: int = 2) -> dict[str, Any]:
+def watch_gmail(match: str, instruction: str, ctx: Context, mode: str = "push", interval_minutes: int = 2, agent: str = "") -> dict[str, Any]:
     """Create a Gmail trigger: when an email matching `match` arrives, automatically do `instruction`.
 
     Examples:
@@ -347,19 +347,22 @@ def watch_gmail(match: str, instruction: str, ctx: Context, mode: str = "push", 
             rule_match = {"contains": m[8:].strip()}
         else:
             rule_match = {"contains": m}
+        rule_body: dict[str, Any] = {"channel": "gmail", "match": rule_match, "instruction": instruction}
         with _client(_api_key(ctx)) as c:
             w = c.post("/triggers/gmail/watch", json={})  # register/refresh the mailbox watch
             w.raise_for_status()
-            r = c.post(
-                "/triggers/rules",
-                json={"channel": "gmail", "match": rule_match, "instruction": instruction},
-            )
+            if agent:
+                ar = c.post("/agents", json={"name": agent})
+                ar.raise_for_status()
+                rule_body["agent_id"] = _unwrap(ar.json()).get("agent_id")
+            r = c.post("/triggers/rules", json=rule_body)
         r.raise_for_status()
         rule = _unwrap(r.json())
         return {
             "mode": "push",
             "watching": match,
             "instruction": instruction,
+            "agent": agent or None,
             "watch_id": rule.get("rule_id"),
             "note": "Real-time trigger active. Stop with stop_gmail_watch(watch_id).",
         }
@@ -543,7 +546,7 @@ def connect_telegram(bot_token: str, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
-def watch_telegram(match: str, instruction: str, ctx: Context) -> dict[str, Any]:
+def watch_telegram(match: str, instruction: str, ctx: Context, agent: str = "") -> dict[str, Any]:
     """Create a real-time Telegram trigger: when a message matching `match` arrives at your bot, do `instruction`.
 
     `match` is 'from:<username>' or any text (matched as a substring of the message). `instruction`
@@ -552,14 +555,20 @@ def watch_telegram(match: str, instruction: str, ctx: Context) -> dict[str, Any]
     """
     m = match.strip()
     rule_match: dict[str, Any] = {"from": m[5:].strip()} if m.lower().startswith("from:") else {"contains": m}
+    rule_body: dict[str, Any] = {"channel": "telegram", "match": rule_match, "instruction": instruction}
     with _client(_api_key(ctx)) as c:
-        r = c.post("/triggers/rules", json={"channel": "telegram", "match": rule_match, "instruction": instruction})
+        if agent:
+            ar = c.post("/agents", json={"name": agent})
+            ar.raise_for_status()
+            rule_body["agent_id"] = _unwrap(ar.json()).get("agent_id")
+        r = c.post("/triggers/rules", json=rule_body)
     r.raise_for_status()
     rule = _unwrap(r.json())
     return {
         "channel": "telegram",
         "watching": match,
         "instruction": instruction,
+        "agent": agent or None,
         "watch_id": rule.get("rule_id"),
         "note": "Real-time trigger active. Stop with stop_telegram_watch(watch_id).",
     }
@@ -592,6 +601,74 @@ def list_runs(ctx: Context, limit: int = 20) -> dict[str, Any]:
     """
     with _client(_api_key(ctx)) as c:
         r = c.get("/agent-runs", params={"limit": limit})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def create_agent(name: str, ctx: Context, description: str = "") -> dict[str, Any]:
+    """Create a named agent — a bundle of triggers you manage as one unit.
+
+    After creating, attach triggers with watch_gmail(..., agent=name) or
+    watch_telegram(..., agent=name). Pause/resume/delete the whole bundle with
+    pause_agent / resume_agent / delete_agent. Use a simple name (e.g. "SupportBot").
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.post("/agents", json={"name": name, "description": description or None})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def list_agents(ctx: Context) -> dict[str, Any]:
+    """List the caller's named agents with their status and trigger counts."""
+    with _client(_api_key(ctx)) as c:
+        r = c.get("/agents")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def get_agent(agent: str, ctx: Context) -> dict[str, Any]:
+    """Get a named agent's detail (its triggers). `agent` is the name or id."""
+    with _client(_api_key(ctx)) as c:
+        r = c.get(f"/agents/{agent}")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def pause_agent(agent: str, ctx: Context) -> dict[str, Any]:
+    """Pause a named agent — disables all its triggers. `agent` is the name or id."""
+    with _client(_api_key(ctx)) as c:
+        r = c.post(f"/agents/{agent}/pause", json={})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def resume_agent(agent: str, ctx: Context) -> dict[str, Any]:
+    """Resume a paused agent — re-enables all its triggers. `agent` is the name or id."""
+    with _client(_api_key(ctx)) as c:
+        r = c.post(f"/agents/{agent}/resume", json={})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def delete_agent(agent: str, ctx: Context) -> dict[str, Any]:
+    """Delete a named agent and all its triggers. `agent` is the name or id."""
+    with _client(_api_key(ctx)) as c:
+        r = c.request("DELETE", f"/agents/{agent}")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def set_trigger_enabled(rule_id: str, enabled: bool, ctx: Context) -> dict[str, Any]:
+    """Enable or disable a single trigger rule by its id (from list_automations / watch_*)."""
+    with _client(_api_key(ctx)) as c:
+        r = c.request("PATCH", f"/triggers/rules/{rule_id}", json={"enabled": enabled})
     r.raise_for_status()
     return _unwrap(r.json())
 
