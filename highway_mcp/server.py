@@ -62,7 +62,7 @@ def get_workflow():
                 "function_base_url": "https://ollama.com",
                 "max_turns": 12,
                 "system_prompt": "You are an autonomous agent. Use the available tools (shell, HTTP, email) to accomplish the user's request. When done, give the final answer.",
-                "tool_catalog": ["shell", "http", "email", "gmail"],
+                "tool_catalog": ["shell", "http", "email", "gmail", "telegram"],
                 "approval_required_tools": ["tools.shell.run", "tools.http.request", "tools.email.send", "apps.platform.gmail.send_email"],
             },
             result_key="agent_step",
@@ -225,7 +225,7 @@ def get_workflow():
             "function_base_url": "https://ollama.com",
             "system_prompt": "You are an autonomous scheduled agent running unattended. Use the available tools (shell, HTTP, email) to accomplish the request, then give the final answer.",
             "max_turns": 10,
-            "tool_catalog": ["shell", "http", "email", "gmail"],
+            "tool_catalog": ["shell", "http", "email", "gmail", "telegram"],
             "approval_required_tools": [],
         }, result_key="agent_step")
 
@@ -431,7 +431,7 @@ def get_workflow():
             "function_base_url": "https://ollama.com",
             "system_prompt": "You are an autonomous deferred agent running unattended at the scheduled time. Use the available tools (shell, HTTP, email) to accomplish the request, then give the final answer.",
             "max_turns": 10,
-            "tool_catalog": ["shell", "http", "email", "gmail"],
+            "tool_catalog": ["shell", "http", "email", "gmail", "telegram"],
             "approval_required_tools": %(approvals)s,
         }, result_key="agent_step")
 
@@ -523,6 +523,53 @@ def disconnect_gmail(ctx: Context) -> dict[str, Any]:
     """Disconnect Gmail for the caller (revoke + delete the stored tokens)."""
     with _client(_api_key(ctx)) as c:
         r = c.request("DELETE", "/oauth/gmail/disconnect")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def connect_telegram(bot_token: str, ctx: Context) -> dict[str, Any]:
+    """Connect a Telegram bot so your agents can send and react on Telegram.
+
+    Create a bot with @BotFather (send /newbot) to get a token like '8123456789:AA...',
+    then call this. It validates the token, stores it server-side, and registers the bot's
+    webhook so incoming messages can trigger reactions (see watch_telegram). One-time per bot.
+    Returns the bot @username.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.post("/integrations/telegram/connect", json={"bot_token": bot_token})
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
+def watch_telegram(match: str, instruction: str, ctx: Context) -> dict[str, Any]:
+    """Create a real-time Telegram trigger: when a message matching `match` arrives at your bot, do `instruction`.
+
+    `match` is 'from:<username>' or any text (matched as a substring of the message). `instruction`
+    is what to do for each matching message (it replies in the same chat). Requires connect_telegram
+    first. Fires within seconds. Returns a watch handle; stop it with stop_telegram_watch(watch_id).
+    """
+    m = match.strip()
+    rule_match: dict[str, Any] = {"from": m[5:].strip()} if m.lower().startswith("from:") else {"contains": m}
+    with _client(_api_key(ctx)) as c:
+        r = c.post("/triggers/rules", json={"channel": "telegram", "match": rule_match, "instruction": instruction})
+    r.raise_for_status()
+    rule = _unwrap(r.json())
+    return {
+        "channel": "telegram",
+        "watching": match,
+        "instruction": instruction,
+        "watch_id": rule.get("rule_id"),
+        "note": "Real-time trigger active. Stop with stop_telegram_watch(watch_id).",
+    }
+
+
+@mcp.tool()
+def stop_telegram_watch(watch_id: str, ctx: Context) -> dict[str, Any]:
+    """Stop a Telegram trigger by its watch_id (the rule id returned by watch_telegram)."""
+    with _client(_api_key(ctx)) as c:
+        r = c.request("DELETE", f"/triggers/rules/{watch_id}")
     r.raise_for_status()
     return _unwrap(r.json())
 
