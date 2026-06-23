@@ -57,10 +57,8 @@ def get_workflow():
             "tools.agent.run_goal",
             kwargs={
                 "goal": "{{goal}}",
-                "provider": "ollama",
-                "model": "qwen3.5:397b-cloud",
-                "function_model": "qwen3.5:397b-cloud",
-                "function_base_url": "https://ollama.com",
+                # Model comes from the engine's gateway `agent` route (config), not hardcoded.
+                "route": "agent",
                 "max_turns": 12,
                 "system_prompt": "You are an autonomous agent. Use the available tools to accomplish the user's request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
                 "tool_catalog": %(catalog)s,
@@ -105,10 +103,8 @@ def get_workflow():
             "tools.agent.run_goal",
             kwargs={
                 "goal": "{{goal}}",
-                "provider": "ollama",
-                "model": "qwen3.5:397b-cloud",
-                "function_model": "qwen3.5:397b-cloud",
-                "function_base_url": "https://ollama.com",
+                # Model comes from the engine's gateway `agent` route (config), not hardcoded.
+                "route": "agent",
                 "max_turns": 8,
                 "system_prompt": "You are a research orchestrator. Break the request into independent research sub-tasks and delegate them to parallel sub-agents with the delegate tool - each sub-agent researches the web on its own. Then combine their findings into your final answer. Even a single research task should be delegated. Only answer directly for a simple question you already know. Guardrails: never fabricate or state unverifiable facts; if something cannot be done, say so plainly.",
                 "tool_catalog": ["delegate"],
@@ -335,10 +331,8 @@ def get_workflow():
     def loop_body(b):
         return b.task("agent_turn", "tools.agent.run_goal", kwargs={
             "goal": "{{goal}}",
-            "provider": "ollama",
-            "model": "qwen3.5:397b-cloud",
-            "function_model": "qwen3.5:397b-cloud",
-            "function_base_url": "https://ollama.com",
+            # Model comes from the engine's gateway `agent` route (config), not hardcoded.
+            "route": "agent",
             "system_prompt": "You are an autonomous scheduled agent running unattended. Use the available tools to accomplish the request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
             "max_turns": 10,
             "tool_catalog": ["shell", "http", "email", "gmail", "telegram"],
@@ -544,10 +538,8 @@ def get_workflow():
     def loop_body(bb):
         return bb.task("agent_turn", "tools.agent.run_goal", kwargs={
             "goal": "{{goal}}",
-            "provider": "ollama",
-            "model": "qwen3.5:397b-cloud",
-            "function_model": "qwen3.5:397b-cloud",
-            "function_base_url": "https://ollama.com",
+            # Model comes from the engine's gateway `agent` route (config), not hardcoded.
+            "route": "agent",
             "system_prompt": "You are an autonomous deferred agent running unattended at the scheduled time. Use the available tools to accomplish the request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
             "max_turns": 10,
             "tool_catalog": ["shell", "http", "email", "gmail", "telegram"],
