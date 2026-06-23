@@ -58,8 +58,8 @@ def get_workflow():
             kwargs={
                 "goal": "{{goal}}",
                 "provider": "ollama",
-                "model": "minimax-m3:cloud",
-                "function_model": "minimax-m3:cloud",
+                "model": "qwen3.5:397b-cloud",
+                "function_model": "qwen3.5:397b-cloud",
                 "function_base_url": "https://ollama.com",
                 "max_turns": 12,
                 "system_prompt": "You are an autonomous agent. Use the available tools to accomplish the user's request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
@@ -87,6 +87,39 @@ def get_workflow():
 
 if __name__ == "__main__":
     print(get_workflow().to_json())
+'''
+
+# Research orchestrator (kept in sync with the engine repo's api/dsl_templates/agent_research.py):
+# a delegate-only agent that fans a multi-part research goal out to parallel research-only
+# (http) sub-agents, then synthesizes. Used by the research_goal tool.
+RESEARCH_DSL_TEMPLATE = '''from highway_dsl import WorkflowBuilder
+
+
+def get_workflow():
+    builder = WorkflowBuilder(name="agent_research", version="1.0.0")
+    builder.task("init", "tools.agent.init_goal", kwargs={"goal": "{{goal}}"})
+
+    def loop_body(b):
+        return b.task(
+            "agent_turn",
+            "tools.agent.run_goal",
+            kwargs={
+                "goal": "{{goal}}",
+                "provider": "ollama",
+                "model": "qwen3.5:397b-cloud",
+                "function_model": "qwen3.5:397b-cloud",
+                "function_base_url": "https://ollama.com",
+                "max_turns": 8,
+                "system_prompt": "You are a research orchestrator. Break the request into independent research sub-tasks and delegate them to parallel sub-agents with the delegate tool - each sub-agent researches the web on its own. Then combine their findings into your final answer. Even a single research task should be delegated. Only answer directly for a simple question you already know. Guardrails: never fabricate or state unverifiable facts; if something cannot be done, say so plainly.",
+                "tool_catalog": ["delegate"],
+                "approval_required_tools": ["tools.agent.spawn_subgoals"],
+            },
+            result_key="agent_step",
+        )
+
+    builder.while_loop("agent_loop", condition="{{agent_done}} == 0", loop_body=loop_body, dependencies=["init"])
+    builder.task("report", "tools.shell.run", args=["echo done"], dependencies=["agent_loop"])
+    return builder.build()
 '''
 
 mcp = FastMCP("highway-agents")
@@ -178,6 +211,26 @@ def run_goal(goal: str, ctx: Context) -> dict[str, Any]:
         r = c.post(
             "/workflows",
             json={"python_dsl": dsl, "inputs": {"goal": goal}, "execute": True},
+        )
+    r.raise_for_status()
+    data = _unwrap(r.json())
+    return {"workflow_run_id": data.get("workflow_run_id"), "status": "started"}
+
+
+@mcp.tool()
+def research_goal(goal: str, ctx: Context) -> dict[str, Any]:
+    """Research a multi-part question by fanning it out to parallel sub-agents NOW.
+
+    Use this for BREADTH research: the agent breaks the goal into independent sub-tasks and
+    runs them as parallel research sub-agents (each browses the web), then synthesizes their
+    findings - faster and cleaner than one-at-a-time lookups. Unlike run_goal, this delegates
+    rather than acting directly, so it does NOT take outbound actions (email/Gmail/Telegram);
+    use run_goal for those. The single delegate step pauses once for approval. Returns a run id.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.post(
+            "/workflows",
+            json={"python_dsl": RESEARCH_DSL_TEMPLATE, "inputs": {"goal": goal}, "execute": True},
         )
     r.raise_for_status()
     data = _unwrap(r.json())
@@ -283,8 +336,8 @@ def get_workflow():
         return b.task("agent_turn", "tools.agent.run_goal", kwargs={
             "goal": "{{goal}}",
             "provider": "ollama",
-            "model": "minimax-m3:cloud",
-            "function_model": "minimax-m3:cloud",
+            "model": "qwen3.5:397b-cloud",
+            "function_model": "qwen3.5:397b-cloud",
             "function_base_url": "https://ollama.com",
             "system_prompt": "You are an autonomous scheduled agent running unattended. Use the available tools to accomplish the request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
             "max_turns": 10,
@@ -492,8 +545,8 @@ def get_workflow():
         return bb.task("agent_turn", "tools.agent.run_goal", kwargs={
             "goal": "{{goal}}",
             "provider": "ollama",
-            "model": "minimax-m3:cloud",
-            "function_model": "minimax-m3:cloud",
+            "model": "qwen3.5:397b-cloud",
+            "function_model": "qwen3.5:397b-cloud",
             "function_base_url": "https://ollama.com",
             "system_prompt": "You are an autonomous deferred agent running unattended at the scheduled time. Use the available tools to accomplish the request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
             "max_turns": 10,
