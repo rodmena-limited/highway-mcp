@@ -268,6 +268,23 @@ def disconnect_mcp(name: str, ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
+def get_trace(workflow_run_id: str, ctx: Context) -> dict[str, Any]:
+    """See WHAT an agent run actually did: a per-agent cost/latency/tool trace.
+
+    Returns {totals, agents, spans}: the run's agent tree grouped into agent nodes (the
+    orchestrator + each leaf sub-agent), each with its model calls, tool calls, delegation,
+    token + USD cost, and latency - plus the individual spans. Use this to understand or
+    debug a run: which sub-agent was slow or expensive, which model/route each call used
+    (and whether it fell back), which tools ran. The way get_status shows progress, this
+    shows the work.
+    """
+    with _client(_api_key(ctx)) as c:
+        r = c.get(f"/workflows/{workflow_run_id}/trace")
+    r.raise_for_status()
+    return _unwrap(r.json())
+
+
+@mcp.tool()
 def get_status(workflow_run_id: str, ctx: Context) -> dict[str, Any]:
     """Get an agent run's status, progress, result, and any pending approvals.
 
