@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.parse import quote
 from typing import Any
 
 import httpx
@@ -618,15 +619,25 @@ def run_goal_deferred(
 def connect_gmail(ctx: Context) -> dict[str, Any]:
     """Get a one-time URL to connect the caller's Gmail account to Highway.
 
-    Returns {authorize_url}: tell the user to open it in a browser and approve.
-    After that, their agents can send/search/read their Gmail (the gmail_send /
+    Returns {authorize_url}: a Highway-hosted connect page (it wraps the Google consent
+    screen with the "unverified app" guidance). Tell the user to open it in a browser and
+    approve. After that, their agents can send/search/read their Gmail (the gmail_send /
     gmail_search / gmail_get tools). One-time per Gmail account; tokens are stored
     server-side per tenant, so scheduled/deferred jobs keep working unattended.
     """
     with _client(_api_key(ctx)) as c:
         r = c.post("/oauth/gmail/authorize", json={})
     r.raise_for_status()
-    return _unwrap(r.json())
+    data = _unwrap(r.json())
+    # Wrap the raw Google consent URL in the Highway-hosted landing page (friendlier UX +
+    # the "unverified app" instructions). The page reads ?url= and builds the button, so
+    # each caller gets their own fresh, signed-state consent link (expires_in_seconds).
+    google_url = data.get("authorize_url") if isinstance(data, dict) else None
+    if google_url:
+        base = os.environ.get("MCP_PUBLIC_BASE_URL", "https://mcp.highway.rodmena.app").rstrip("/")
+        data["authorize_url"] = f"{base}/connect-gmail.html?url={quote(google_url, safe='')}"
+        data["google_consent_url"] = google_url
+    return data
 
 
 @mcp.tool()

@@ -1,1 +1,40 @@
-<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Highway · Connect Gmail</title><style>body{font:18px -apple-system,Segoe UI,Roboto,sans-serif;background:#0b0f17;color:#e6edf6;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}.c{text-align:center;max-width:480px;padding:24px}h1{color:#5eead4;font-size:24px}p{color:#9fb0c7;line-height:1.6}a.btn{display:inline-block;margin-top:12px;background:linear-gradient(180deg,#5eead4,#2dd4bf);color:#0b0f17;padding:14px 30px;border-radius:980px;text-decoration:none;font-weight:700}</style></head><body><div class=c><h1>Connect Gmail to Highway</h1><p>This authorizes Gmail (send + read) for the <b>demo</b> tenant. You may see an “unverified app” screen — click <b>Advanced → Go to the app</b>, then approve.</p><a class=btn href="https://accounts.google.com/o/oauth2/v2/auth?client_id=313642673386-tt5fgd28jpbf8ef3dhirt2h5s37g6cqi.apps.googleusercontent.com&amp;redirect_uri=https%3A%2F%2Fhighway.rodmena.app%2Fapi%2Fv1%2Foauth%2Fgmail%2Fcallback&amp;response_type=code&amp;scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.send+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fgmail.readonly&amp;state=eyJ0IjogImRlbW8iLCAibiI6ICI5MmM4ODYyNjAzMjQ5MmRmIn0%3D.dbb687e6d2e8429e3eacf532791c8bfe&amp;access_type=offline&amp;prompt=consent&amp;include_granted_scopes=true">Connect Gmail →</a></div></body></html>
+<!doctype html>
+<html>
+<head>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Highway · Connect Gmail</title>
+<style>
+body{font:18px -apple-system,Segoe UI,Roboto,sans-serif;background:#0b0f17;color:#e6edf6;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+.c{text-align:center;max-width:480px;padding:24px}
+h1{color:#5eead4;font-size:24px}
+p{color:#9fb0c7;line-height:1.6}
+a.btn{display:inline-block;margin-top:12px;background:linear-gradient(180deg,#5eead4,#2dd4bf);color:#0b0f17;padding:14px 30px;border-radius:980px;text-decoration:none;font-weight:700}
+a.btn.disabled{background:#26303f;color:#6b7a90;pointer-events:none}
+#note{font-size:14px;margin-top:18px}
+</style>
+</head>
+<body>
+<div class=c>
+<h1>Connect Gmail to Highway</h1>
+<p>Authorizes Gmail (send + read) for your Highway tenant. You may see an &ldquo;unverified app&rdquo; screen &mdash; click <b>Advanced &rarr; Go to the app</b>, then approve.</p>
+<a class=btn id=go href="#">Connect Gmail &rarr;</a>
+<p id=note></p>
+</div>
+<script>
+(function () {
+  var go = document.getElementById('go');
+  var note = document.getElementById('note');
+  var u = new URLSearchParams(location.search).get('url') || '';
+  // Only ever link to Google's consent endpoint; never let ?url= point elsewhere.
+  if (u.indexOf('https://accounts.google.com/') === 0) {
+    go.setAttribute('href', u);
+  } else {
+    go.className = 'btn disabled';
+    go.removeAttribute('href');
+    note.textContent = 'This link is missing or expired. Re-run connect_gmail to get a fresh one (links expire after 10 minutes).';
+  }
+})();
+</script>
+</body>
+</html>
