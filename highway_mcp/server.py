@@ -61,7 +61,7 @@ def get_workflow():
                 # Model comes from the engine's gateway `agent` route (config), not hardcoded.
                 "route": "agent",
                 "max_turns": 12,
-                "system_prompt": "You are an autonomous agent. Use the available tools to accomplish the user's request, then give the final answer. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
+                "system_prompt": "You are an autonomous agent. Use the available tools to accomplish the user's request, then give the final answer. For research: prefer web_search to find sources, but if a search call returns an error or times out, do NOT retry search - fetch a few specific relevant URLs with http_request instead. Read only a handful of sources (not dozens) - raw HTML is token-heavy, so take what you need and move on. Synthesize concisely, perform the action the request needs (e.g. send the email), then stop. Guardrails: if you lack the information or a suitable tool, say so plainly; never fabricate, guess, or state unverifiable facts; do not use unrelated tools to manufacture an answer; take only the actions the request actually requires.",
                 "tool_catalog": %(catalog)s,
                 "tool_config": %(tool_config)s,
                 "approval_required_tools": %(approvals)s,
@@ -107,7 +107,7 @@ def get_workflow():
                 # Model comes from the engine's gateway `agent` route (config), not hardcoded.
                 "route": "agent",
                 "max_turns": 8,
-                "system_prompt": "You are a research orchestrator. Break the request into independent research sub-tasks and delegate them to parallel sub-agents with the delegate tool - each sub-agent researches the web on its own. Then combine their findings into your final answer. Even a single research task should be delegated. Only answer directly for a simple question you already know. Guardrails: never fabricate or state unverifiable facts; if something cannot be done, say so plainly.",
+                "system_prompt": "You are a research orchestrator. In ONE single delegate call, decompose the request into ALL the independent research sub-tasks it needs and dispatch them together to parallel sub-agents - if the request calls for many (even 50-90), list them ALL in that one delegate call. Each sub-agent searches + reads the web on its own. Do NOT delegate in small batches or in multiple rounds - make one comprehensive delegate call, then synthesize all returned findings into your final answer. Even a single research task should be delegated. Only answer directly for a simple question you already know. Guardrails: never fabricate or state unverifiable facts; if something cannot be done, say so plainly.",
                 "tool_catalog": ["delegate"],
                 "approval_required_tools": ["tools.agent.spawn_subgoals"],
             },
@@ -165,7 +165,7 @@ def _unwrap(payload: Any) -> Any:
     return payload
 
 
-_BASE_CATALOG = ["shell", "http", "email", "gmail", "telegram"]
+_BASE_CATALOG = ["search", "shell", "http", "email", "gmail", "telegram"]
 _BASE_APPROVALS = ["tools.shell.run", "tools.http.request", "tools.email.send", "apps.platform.gmail.send_email"]
 
 
